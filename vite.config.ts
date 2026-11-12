@@ -4,7 +4,7 @@ import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
-  // Set BASE_PATH when the app is served from a sub-path, for example GitHub Pages: BASE_PATH=/grocery-app/
+  // Set BASE_PATH when the app is served from a sub-path, for example GitHub Pages: BASE_PATH=/spens/
   base: process.env.BASE_PATH ?? '/',
   build: { target: 'es2022' },
   plugins: [
@@ -13,9 +13,10 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
       manifest: {
-        name: 'Groceries',
-        short_name: 'Groceries',
-        description: 'A shared grocery list for your household.',
+        name: 'Spens',
+        short_name: 'Spens',
+        description: "Spens: 'n gedeelde inkopielys vir jou huishouding.",
+        lang: 'af',
         theme_color: '#1f7a4d',
         background_color: '#f6f7f4',
         display: 'standalone',

@@ -15,7 +15,7 @@ The app uses the `drive.file` permission only. With this permission, the app can
 files that you pick. It cannot see other files in your Drive.
 
 1. Go to <https://console.cloud.google.com/> and sign in with your Google account.
-2. Make a new project. Give it a name, for example "Grocery app".
+2. Make a new project. Give it a name, for example "Spens".
 3. On the project dashboard, find **Project number**. Write it down. This is `VITE_GOOGLE_APP_ID`.
 4. Go to **APIs & Services → Library**. Enable **Google Drive API**. Then enable **Google Picker API**.
 5. Go to **Google Auth Platform → Branding** (older consoles call it "OAuth consent screen").
@@ -71,12 +71,12 @@ The host keeps only the app files. Your list stays in Google Drive.
 
 The project has a GitHub Actions workflow for GitHub Pages in `.github/workflows/deploy.yml`:
 
-1. Make a GitHub repository, for example `grocery-app`, and push this project to it.
+1. Make a GitHub repository, for example `spens`, and push this project to it.
 2. In the repository, go to **Settings → Pages**. Set **Source** to **GitHub Actions**.
 3. Go to **Settings → Secrets and variables → Actions → Variables**. Add three repository variables:
    `VITE_GOOGLE_CLIENT_ID`, `VITE_GOOGLE_API_KEY` and `VITE_GOOGLE_APP_ID`.
 4. Push to `main`, or run the workflow by hand from the **Actions** tab.
-5. The app is then at `https://YOUR-GITHUB-NAME.github.io/grocery-app/`.
+5. The app is then at `https://YOUR-GITHUB-NAME.github.io/spens/`.
 
 Make sure that the origin `https://YOUR-GITHUB-NAME.github.io` is in the OAuth client (part 1, step 7).
 
@@ -86,15 +86,16 @@ On your phone:
 
 1. Open the app address in Chrome.
 2. Type your name.
-3. Tap the settings icon. Tap **Create a new shared list**.
+3. Tap the settings icon. Tap **Skep 'n nuwe gedeelde lys** (create a new shared list).
 4. Sign in with Google and allow the app to use its own files.
-5. Open settings again. Type your wife's Gmail address under **Share with** and tap **Send invite**.
+5. Open settings again. Type your wife's Gmail address under **Deel met** (share with) and tap **Stuur uitnodiging**
+   (send invite).
 
 On your wife's phone:
 
 1. Open the app address in Chrome.
 2. Type her name.
-3. Tap the settings icon. Tap **Join a list shared with me**.
+3. Tap the settings icon. Tap **Sluit aan by 'n gedeelde lys** (join a shared list).
 4. Sign in with Google. In the file picker, select the grocery list file.
 
 To put the app on the home screen, open the Chrome menu (⋮) and tap **Add to home screen** or **Install app**.
@@ -102,7 +103,7 @@ To put the app on the home screen, open the Chrome menu (⋮) and tap **Add to h
 ## Things to know
 
 - **Sign-in expiry.** A Google sign-in in the browser stays valid for about one hour. After that, the app shows a
-  **Sign in to Google** button. One tap fixes it, and the app does not ask for the permission again. A native app
+  **Meld by Google aan** (sign in to Google) button. One tap fixes it, and the app does not ask for the permission again. A native app
   version can remove this step (see README).
 - **Offline.** You can add and tick items with no signal. The phone keeps the changes and syncs them when the signal
   comes back.

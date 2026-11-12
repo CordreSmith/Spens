@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { addItem, setChecked, viewList, type ListDoc } from '../domain/list';
 import { memoryStore, type KeyValueStore } from './KeyValueStore';
-import { NeedsUserActionError, OfflineError, type ProviderDefinition, type StorageProvider } from './StorageProvider';
+import {
+  NeedsUserActionError,
+  OfflineError,
+  type ProviderContext,
+  type ProviderDefinition,
+  type StorageProvider,
+} from './StorageProvider';
 import { SyncEngine } from './SyncEngine';
 
 /** A shared "cloud file" that several fake providers (phones) read and write. */
@@ -18,9 +24,9 @@ function fakeDefinition(cloud: FakeCloud): ProviderDefinition {
   return {
     id: 'fake',
     displayName: 'Fake cloud',
-    description: 'In-memory storage for tests',
+    description: 'drive.description',
     unavailableReason: () => null,
-    create: (store: KeyValueStore): StorageProvider => {
+    create: ({ store }: ProviderContext): StorageProvider => {
       let connected = false;
       return {
         id: 'fake',
@@ -30,7 +36,7 @@ function fakeDefinition(cloud: FakeCloud): ProviderDefinition {
           connected = (await store.get('fake.connected')) === 'yes';
         },
         isConnected: () => connected,
-        describeConnection: () => 'Fake list',
+        describeConnection: () => ({ key: 'error.raw', params: { text: 'Fake list' } }),
         async createList(_name: string, initial: ListDoc) {
           cloud.json = JSON.stringify(initial);
           cloud.version++;
@@ -154,9 +160,13 @@ describe('SyncEngine', () => {
     const cloud = new FakeCloud();
     const a = await phone(cloud);
     await a.createList('fake', 'Groceries');
-    cloud.failNext = new NeedsUserActionError('Sign-in expired', 'Sign in again');
+    cloud.failNext = new NeedsUserActionError('drive.expired', 'drive.signIn');
     await a.sync();
-    expect(a.getState()).toMatchObject({ status: 'needs-user-action', actionLabel: 'Sign in again' });
+    expect(a.getState()).toMatchObject({
+      status: 'needs-user-action',
+      problem: { key: 'drive.expired' },
+      action: 'drive.signIn',
+    });
     await a.resolveUserAction();
     expect(a.getState().status).toBe('synced');
   });

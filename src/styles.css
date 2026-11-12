@@ -19,8 +19,9 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Dark theme: used when the phone is dark and the person did not pick Lig, or when they picked Donker. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     --bg: #111513;
     --surface: #1a201c;
     --surface-2: #232a25;
@@ -37,6 +38,24 @@
     --shadow: 0 8px 28px rgb(0 0 0 / 50%);
     color-scheme: dark;
   }
+}
+
+:root[data-theme='dark'] {
+  --bg: #111513;
+  --surface: #1a201c;
+  --surface-2: #232a25;
+  --text: #e8ece9;
+  --muted: #9aa69f;
+  --border: #2e3631;
+  --accent: #4fbf86;
+  --accent-text: #08140d;
+  --accent-soft: #1d3a2a;
+  --warn: #f0b44c;
+  --warn-soft: #3a2c12;
+  --danger: #ff8a80;
+  --highlight: #4a4320;
+  --shadow: 0 8px 28px rgb(0 0 0 / 50%);
+  color-scheme: dark;
 }
 
 * {
@@ -552,4 +571,32 @@ main {
   background: var(--warn-soft);
   color: var(--text);
   font-size: 15px;
+}
+
+/* Segmented choice (Taal, Tema) */
+.segmented {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.segmented button {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.segmented button[aria-checked='true'] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 15%);
 }

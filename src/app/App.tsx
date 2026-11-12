@@ -1,4 +1,14 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import {
   addItem,
   setChecked,
@@ -8,8 +18,26 @@ import {
   type Actor,
   type ItemView,
 } from '../domain/list';
+import {
+  errorToMessage,
+  LANGUAGE_NAMES,
+  LANGUAGES,
+  translate,
+  type Language,
+  type Message,
+  type MessageKey,
+  type MessageParams,
+} from '../i18n/messages';
 import type { KeyValueStore } from '../sync/KeyValueStore';
 import type { EngineState, SyncEngine } from '../sync/SyncEngine';
+import {
+  applyTheme,
+  resolveLanguage,
+  savePreferences,
+  type LanguagePreference,
+  type Preferences,
+  type ThemePreference,
+} from './preferences';
 import { saveActor } from './profile';
 
 interface Toast {
@@ -18,19 +46,69 @@ interface Toast {
   undo?: () => void;
 }
 
-export function App({ engine, store, initialActor }: { engine: SyncEngine; store: KeyValueStore; initialActor: Actor }) {
+interface Translator {
+  language: Language;
+  t: (key: MessageKey, params?: MessageParams) => string;
+  /** Translates a message that came from the sync engine or a provider. */
+  tm: (message: Message) => string;
+}
+
+const I18n = createContext<Translator>(makeTranslator('af'));
+
+function useT(): Translator {
+  return useContext(I18n);
+}
+
+function makeTranslator(language: Language): Translator {
+  return {
+    language,
+    t: (key, params) => translate(language, key, params),
+    tm: (message) => translate(language, message.key, message.params),
+  };
+}
+
+export function App({
+  engine,
+  store,
+  initialActor,
+  initialPreferences,
+  languageRef,
+}: {
+  engine: SyncEngine;
+  store: KeyValueStore;
+  initialActor: Actor;
+  initialPreferences: Preferences;
+  /** Lets non-React code (storage providers) read the current language. */
+  languageRef: { current: Language };
+}) {
   const state = useSyncExternalStore(engine.subscribe, engine.getState);
   const view = useMemo(() => viewList(state.doc), [state.doc]);
   const [actor, setActor] = useState(initialActor);
+  const [preferences, setPreferences] = useState(initialPreferences);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
+  const deviceLanguages = useDeviceLanguages();
+  const language = resolveLanguage(preferences.language, deviceLanguages);
+  const translator = useMemo(() => makeTranslator(language), [language]);
+  const { t, tm } = translator;
   useAutoSync(engine);
 
   useEffect(() => {
+    languageRef.current = language;
+    document.documentElement.lang = language;
+  }, [language, languageRef]);
+
+  useEffect(() => applyTheme(preferences.theme), [preferences.theme]);
+
+  useEffect(() => {
+    if (preferences !== initialPreferences) void savePreferences(store, preferences);
+  }, [preferences, initialPreferences, store]);
+
+  useEffect(() => {
     if (!toast) return;
-    const timer = setTimeout(() => setToast((t) => (t?.id === toast.id ? null : t)), toast.undo ? 6000 : 3000);
+    const timer = setTimeout(() => setToast((current) => (current?.id === toast.id ? null : current)), toast.undo ? 6000 : 3000);
     return () => clearTimeout(timer);
   }, [toast]);
 
@@ -52,12 +130,12 @@ export function App({ engine, store, initialActor }: { engine: SyncEngine; store
     try {
       result = addItem(engine.getState().doc, { name, quantity }, actor);
     } catch (error) {
-      showToast(error instanceof Error ? error.message : String(error));
+      showToast(tm(errorToMessage(error)));
       return false;
     }
     engine.change(() => result.doc);
     if (result.outcome === 'already-on-list') {
-      showToast(`${result.doc.items[result.id].name.value} is already on the list`);
+      showToast(t('toast.alreadyOnList', { name: result.doc.items[result.id].name.value }));
     }
     setHighlightId(result.id);
     return true;
@@ -75,144 +153,160 @@ export function App({ engine, store, initialActor }: { engine: SyncEngine; store
     await saveActor(store, next);
   }
 
+  function handlePreferencesChange(patch: Partial<Preferences>) {
+    // Functional update: two quick taps must not overwrite each other's change.
+    setPreferences((current) => ({ ...current, ...patch }));
+  }
+
   return (
-    <div className="app">
-      <header className="topbar">
-        <h1>Groceries</h1>
-        <SyncPill state={state} onClick={() => setSettingsOpen(true)} />
-        <button className="icon-button" aria-label="Settings" onClick={() => setSettingsOpen(true)}>
-          <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
-            <path
-              fill="currentColor"
-              d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"
-              transform="translate(-1 0)"
-            />
-          </svg>
-        </button>
-      </header>
-
-      {state.status === 'needs-user-action' && (
-        <div className="banner banner-warn" role="alert">
-          <span>{state.message}</span>
-          <button className="button button-small" onClick={() => void engine.resolveUserAction()}>
-            {state.actionLabel}
+    <I18n.Provider value={translator}>
+      <div className="app">
+        <header className="topbar">
+          <h1>Spens</h1>
+          <SyncPill state={state} onClick={() => setSettingsOpen(true)} />
+          <button className="icon-button" aria-label={t('app.settings')} onClick={() => setSettingsOpen(true)}>
+            <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"
+                transform="translate(-1 0)"
+              />
+            </svg>
           </button>
-        </div>
-      )}
-      {state.status === 'not-connected' && (
-        <div className="banner">
-          <span>This list is only on this phone.</span>
-          <button className="button button-small button-quiet" onClick={() => setSettingsOpen(true)}>
-            Share it
-          </button>
-        </div>
-      )}
+        </header>
 
-      <AddBar suggestions={view.suggestions} onAdd={handleAdd} />
-
-      <main>
-        <section aria-labelledby="to-buy">
-          <h2 id="to-buy" className="section-title">
-            To buy <span className="count">{view.toBuy.length}</span>
-          </h2>
-          {view.toBuy.length === 0 ? (
-            <p className="empty">Nothing to buy. Add an item above.</p>
-          ) : (
-            <ul className="items">
-              {view.toBuy.map((item) => (
-                <ItemRow
-                  key={item.id}
-                  item={item}
-                  me={actor.name}
-                  highlight={item.id === highlightId}
-                  onToggle={() => engine.change((doc) => setChecked(doc, item.id, true, actor))}
-                  onEdit={() => setEditingId(item.id)}
-                />
-              ))}
-            </ul>
-          )}
-        </section>
-
-        {view.inTrolley.length > 0 && (
-          <section aria-labelledby="in-trolley" className="trolley">
-            <h2 id="in-trolley" className="section-title">
-              In the trolley <span className="count">{view.inTrolley.length}</span>
-            </h2>
-            <ul className="items">
-              {view.inTrolley.map((item) => (
-                <ItemRow
-                  key={item.id}
-                  item={item}
-                  me={actor.name}
-                  highlight={item.id === highlightId}
-                  onToggle={() => engine.change((doc) => setChecked(doc, item.id, false, actor))}
-                  onEdit={() => setEditingId(item.id)}
-                />
-              ))}
-            </ul>
-            <button
-              className="button button-wide"
-              onClick={() =>
-                handleRemove(
-                  view.inTrolley,
-                  `Removed ${view.inTrolley.length} bought ${view.inTrolley.length === 1 ? 'item' : 'items'}`,
-                )
-              }
-            >
-              Done shopping · remove bought items
+        {state.status === 'needs-user-action' && (
+          <div className="banner banner-warn" role="alert">
+            <span>{state.problem && tm(state.problem)}</span>
+            <button className="button button-small" onClick={() => void engine.resolveUserAction()}>
+              {state.action && t(state.action)}
             </button>
-          </section>
+          </div>
         )}
-      </main>
-
-      {toast && (
-        <div className="toast" role="status" key={toast.id}>
-          <span>{toast.message}</span>
-          {toast.undo && (
-            <button
-              className="toast-action"
-              onClick={() => {
-                toast.undo?.();
-                setToast(null);
-              }}
-            >
-              Undo
+        {state.status === 'not-connected' && (
+          <div className="banner">
+            <span>{t('banner.localOnly')}</span>
+            <button className="button button-small button-quiet" onClick={() => setSettingsOpen(true)}>
+              {t('banner.share')}
             </button>
+          </div>
+        )}
+
+        <AddBar suggestions={view.suggestions} onAdd={handleAdd} />
+
+        <main>
+          <section aria-labelledby="to-buy">
+            <h2 id="to-buy" className="section-title">
+              {t('list.toBuy')} <span className="count">{view.toBuy.length}</span>
+            </h2>
+            {view.toBuy.length === 0 ? (
+              <p className="empty">{t('list.empty')}</p>
+            ) : (
+              <ul className="items">
+                {view.toBuy.map((item) => (
+                  <ItemRow
+                    key={item.id}
+                    item={item}
+                    me={actor.name}
+                    highlight={item.id === highlightId}
+                    onToggle={() => engine.change((doc) => setChecked(doc, item.id, true, actor))}
+                    onEdit={() => setEditingId(item.id)}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {view.inTrolley.length > 0 && (
+            <section aria-labelledby="in-trolley" className="trolley">
+              <h2 id="in-trolley" className="section-title">
+                {t('list.trolley')} <span className="count">{view.inTrolley.length}</span>
+              </h2>
+              <ul className="items">
+                {view.inTrolley.map((item) => (
+                  <ItemRow
+                    key={item.id}
+                    item={item}
+                    me={actor.name}
+                    highlight={item.id === highlightId}
+                    onToggle={() => engine.change((doc) => setChecked(doc, item.id, false, actor))}
+                    onEdit={() => setEditingId(item.id)}
+                  />
+                ))}
+              </ul>
+              <button
+                className="button button-wide"
+                onClick={() =>
+                  handleRemove(
+                    view.inTrolley,
+                    view.inTrolley.length === 1
+                      ? t('toast.removedBoughtOne')
+                      : t('toast.removedBoughtMany', { count: view.inTrolley.length }),
+                  )
+                }
+              >
+                {t('list.doneShopping')}
+              </button>
+            </section>
           )}
-        </div>
-      )}
+        </main>
 
-      <EditSheet
-        item={editing}
-        onClose={() => setEditingId(null)}
-        onSave={(patch) => {
-          if (!editing) return;
-          try {
-            engine.change((doc) => updateItem(doc, editing.id, patch, actor));
+        {toast && (
+          <div className="toast" role="status" key={toast.id}>
+            <span>{toast.message}</span>
+            {toast.undo && (
+              <button
+                className="toast-action"
+                onClick={() => {
+                  toast.undo?.();
+                  setToast(null);
+                }}
+              >
+                {t('toast.undo')}
+              </button>
+            )}
+          </div>
+        )}
+
+        <EditSheet
+          item={editing}
+          onClose={() => setEditingId(null)}
+          onSave={(patch) => {
+            if (!editing) return;
+            try {
+              engine.change((doc) => updateItem(doc, editing.id, patch, actor));
+              setEditingId(null);
+            } catch (error) {
+              showToast(tm(errorToMessage(error)));
+            }
+          }}
+          onRemove={() => {
+            if (!editing) return;
+            handleRemove([editing], t('toast.removed', { name: editing.name }));
             setEditingId(null);
-          } catch (error) {
-            showToast(error instanceof Error ? error.message : String(error));
-          }
-        }}
-        onRemove={() => {
-          if (!editing) return;
-          handleRemove([editing], `Removed ${editing.name}`);
-          setEditingId(null);
-        }}
-      />
+          }}
+        />
 
-      <SettingsSheet
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        engine={engine}
-        state={state}
-        name={actor.name}
-        onNameChange={handleNameChange}
-        onDone={showToast}
-      />
+        <SettingsSheet
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          engine={engine}
+          state={state}
+          name={actor.name}
+          preferences={preferences}
+          onNameChange={handleNameChange}
+          onPreferencesChange={handlePreferencesChange}
+          onDone={showToast}
+        />
 
-      <WelcomeSheet open={!actor.name} onSave={handleNameChange} />
-    </div>
+        <WelcomeSheet
+          open={!actor.name}
+          preferences={preferences}
+          onPreferencesChange={handlePreferencesChange}
+          onSave={handleNameChange}
+        />
+      </div>
+    </I18n.Provider>
   );
 }
 
@@ -236,34 +330,51 @@ function useAutoSync(engine: SyncEngine) {
   }, [engine]);
 }
 
+/** The phone's languages, kept current when the person changes them in the phone settings. */
+function useDeviceLanguages(): readonly string[] {
+  const [languages, setLanguages] = useState<readonly string[]>(() => readLanguages());
+  useEffect(() => {
+    const update = () => setLanguages(readLanguages());
+    window.addEventListener('languagechange', update);
+    return () => window.removeEventListener('languagechange', update);
+  }, []);
+  return languages;
+
+  function readLanguages(): readonly string[] {
+    return navigator.languages?.length ? [...navigator.languages] : [navigator.language];
+  }
+}
+
 function SyncPill({ state, onClick }: { state: EngineState; onClick: () => void }) {
+  const { t, tm } = useT();
   const { label, tone } = describe();
   return (
-    <button className={`sync-pill sync-${tone}`} onClick={onClick} title={state.message ?? undefined}>
+    <button className={`sync-pill sync-${tone}`} onClick={onClick} title={state.problem ? tm(state.problem) : undefined}>
       <span className="dot" aria-hidden="true" />
-      {label}
+      {t(label)}
     </button>
   );
 
-  function describe(): { label: string; tone: 'ok' | 'busy' | 'warn' | 'off' } {
+  function describe(): { label: MessageKey; tone: 'ok' | 'busy' | 'warn' | 'off' } {
     switch (state.status) {
       case 'not-connected':
-        return { label: 'This phone only', tone: 'off' };
+        return { label: 'sync.localOnly', tone: 'off' };
       case 'syncing':
-        return { label: 'Syncing…', tone: 'busy' };
+        return { label: 'sync.syncing', tone: 'busy' };
       case 'synced':
-        return state.pendingChanges ? { label: 'Saving…', tone: 'busy' } : { label: 'Synced', tone: 'ok' };
+        return state.pendingChanges ? { label: 'sync.saving', tone: 'busy' } : { label: 'sync.synced', tone: 'ok' };
       case 'offline':
-        return { label: 'Offline', tone: 'warn' };
+        return { label: 'sync.offline', tone: 'warn' };
       case 'needs-user-action':
-        return { label: 'Sign-in needed', tone: 'warn' };
+        return { label: 'sync.needsAction', tone: 'warn' };
       case 'error':
-        return { label: 'Sync problem', tone: 'warn' };
+        return { label: 'sync.error', tone: 'warn' };
     }
   }
 }
 
 function AddBar({ suggestions, onAdd }: { suggestions: string[]; onAdd: (name: string, quantity: string) => boolean }) {
+  const { t } = useT();
   const [name, setName] = useState('');
   const [quantity, setQuantity] = useState('');
   const nameRef = useRef<HTMLInputElement>(null);
@@ -283,8 +394,8 @@ function AddBar({ suggestions, onAdd }: { suggestions: string[]; onAdd: (name: s
       <input
         ref={nameRef}
         className="input add-name"
-        placeholder="Add an item…"
-        aria-label="Item name"
+        placeholder={t('add.placeholder')}
+        aria-label={t('add.nameLabel')}
         value={name}
         onChange={(e) => setName(e.target.value)}
         list="suggestions"
@@ -293,15 +404,15 @@ function AddBar({ suggestions, onAdd }: { suggestions: string[]; onAdd: (name: s
       />
       <input
         className="input add-qty"
-        placeholder="Qty"
-        aria-label="Quantity"
+        placeholder={t('add.quantityPlaceholder')}
+        aria-label={t('add.quantityLabel')}
         value={quantity}
         onChange={(e) => setQuantity(e.target.value)}
         autoComplete="off"
         enterKeyHint="done"
       />
-      <button className="button button-primary add-button" type="submit" aria-label="Add item" disabled={!name.trim()}>
-        Add
+      <button className="button button-primary add-button" type="submit" aria-label={t('add.buttonLabel')} disabled={!name.trim()}>
+        {t('add.button')}
       </button>
       <datalist id="suggestions">
         {suggestions.map((s) => (
@@ -325,6 +436,7 @@ function ItemRow({
   onToggle: () => void;
   onEdit: () => void;
 }) {
+  const { t } = useT();
   const byOther = item.addedBy && item.addedBy !== me;
   return (
     <li id={`item-${item.id}`} className={`item${item.checked ? ' item-checked' : ''}${highlight ? ' item-highlight' : ''}`}>
@@ -332,14 +444,14 @@ function ItemRow({
         className="check"
         role="checkbox"
         aria-checked={item.checked}
-        aria-label={item.checked ? `Put ${item.name} back on the list` : `Mark ${item.name} as in the trolley`}
+        aria-label={t(item.checked ? 'item.uncheck' : 'item.check', { name: item.name })}
         onClick={onToggle}
       >
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
           <path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
-      <button className="item-body" onClick={onEdit} aria-label={`Edit ${item.name}`}>
+      <button className="item-body" onClick={onEdit} aria-label={t('item.edit', { name: item.name })}>
         <span className="item-line">
           <span className="item-name">{item.name}</span>
           {item.quantity && <span className="qty">{item.quantity}</span>}
@@ -348,7 +460,7 @@ function ItemRow({
           <span className="item-meta">
             {item.note}
             {item.note && byOther && ' · '}
-            {byOther && `added by ${item.addedBy}`}
+            {byOther && t('item.addedBy', { name: item.addedBy })}
           </span>
         )}
       </button>
@@ -369,6 +481,7 @@ function Sheet({
   children: ReactNode;
   dismissible?: boolean;
 }) {
+  const { t } = useT();
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = ref.current;
@@ -392,7 +505,7 @@ function Sheet({
         <div className="sheet-header">
           <h2>{title}</h2>
           {dismissible && (
-            <button className="icon-button" aria-label="Close" onClick={onClose}>
+            <button className="icon-button" aria-label={t('sheet.close')} onClick={onClose}>
               <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
                 <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
               </svg>
@@ -402,6 +515,53 @@ function Sheet({
         {children}
       </div>
     </dialog>
+  );
+}
+
+/** A row of buttons where exactly one is selected. */
+function Segmented<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="field">
+      <span>{label}</span>
+      <div className="segmented" role="radiogroup" aria-label={label}>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={option.value === value}
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LanguageChoice({ value, onChange }: { value: LanguagePreference; onChange: (value: LanguagePreference) => void }) {
+  const { t } = useT();
+  return (
+    <Segmented<LanguagePreference>
+      label={t('settings.language')}
+      value={value}
+      options={[
+        ...LANGUAGES.map((language) => ({ value: language, label: LANGUAGE_NAMES[language] })),
+        { value: 'device', label: t('settings.followDevice') },
+      ]}
+      onChange={onChange}
+    />
   );
 }
 
@@ -416,8 +576,9 @@ function EditSheet({
   onSave: (patch: { name: string; quantity: string; note: string }) => void;
   onRemove: () => void;
 }) {
+  const { t } = useT();
   return (
-    <Sheet open={item !== null} onClose={onClose} title="Edit item">
+    <Sheet open={item !== null} onClose={onClose} title={t('edit.title')}>
       {item && (
         <form
           key={item.id}
@@ -433,24 +594,24 @@ function EditSheet({
           }}
         >
           <label className="field">
-            <span>Item</span>
+            <span>{t('edit.name')}</span>
             <input className="input" name="name" defaultValue={item.name} required autoComplete="off" />
           </label>
           <label className="field">
-            <span>Quantity</span>
-            <input className="input" name="quantity" defaultValue={item.quantity} placeholder="For example 2, 1 kg, a big one" autoComplete="off" />
+            <span>{t('edit.quantity')}</span>
+            <input className="input" name="quantity" defaultValue={item.quantity} placeholder={t('edit.quantityPlaceholder')} autoComplete="off" />
           </label>
           <label className="field">
-            <span>Note</span>
-            <input className="input" name="note" defaultValue={item.note} placeholder="For example the low-fat one" autoComplete="off" />
+            <span>{t('edit.note')}</span>
+            <input className="input" name="note" defaultValue={item.note} placeholder={t('edit.notePlaceholder')} autoComplete="off" />
           </label>
-          {item.addedBy && <p className="hint">Added by {item.addedBy}</p>}
+          {item.addedBy && <p className="hint">{t('edit.addedBy', { name: item.addedBy })}</p>}
           <div className="row">
             <button type="button" className="button button-danger" onClick={onRemove}>
-              Remove
+              {t('edit.remove')}
             </button>
             <button type="submit" className="button button-primary">
-              Save
+              {t('edit.save')}
             </button>
           </div>
         </form>
@@ -459,10 +620,21 @@ function EditSheet({
   );
 }
 
-function WelcomeSheet({ open, onSave }: { open: boolean; onSave: (name: string) => void }) {
+function WelcomeSheet({
+  open,
+  preferences,
+  onPreferencesChange,
+  onSave,
+}: {
+  open: boolean;
+  preferences: Preferences;
+  onPreferencesChange: (patch: Partial<Preferences>) => void;
+  onSave: (name: string) => void;
+}) {
+  const { t } = useT();
   const [name, setName] = useState('');
   return (
-    <Sheet open={open} onClose={() => undefined} title="Welcome" dismissible={false}>
+    <Sheet open={open} onClose={() => undefined} title={t('welcome.title')} dismissible={false}>
       <form
         className="stack"
         onSubmit={(e) => {
@@ -470,10 +642,18 @@ function WelcomeSheet({ open, onSave }: { open: boolean; onSave: (name: string) 
           if (name.trim()) onSave(name);
         }}
       >
-        <p>What is your name? The list shows it next to the items you add.</p>
-        <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" autoFocus autoComplete="given-name" />
+        <LanguageChoice value={preferences.language} onChange={(language) => onPreferencesChange({ language })} />
+        <p>{t('welcome.text')}</p>
+        <input
+          className="input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={t('welcome.placeholder')}
+          autoFocus
+          autoComplete="given-name"
+        />
         <button type="submit" className="button button-primary" disabled={!name.trim()}>
-          Start
+          {t('welcome.start')}
         </button>
       </form>
     </Sheet>
@@ -486,7 +666,9 @@ function SettingsSheet({
   engine,
   state,
   name,
+  preferences,
   onNameChange,
+  onPreferencesChange,
   onDone,
 }: {
   open: boolean;
@@ -494,18 +676,23 @@ function SettingsSheet({
   engine: SyncEngine;
   state: EngineState;
   name: string;
+  preferences: Preferences;
   onNameChange: (name: string) => void;
+  onPreferencesChange: (patch: Partial<Preferences>) => void;
   onDone: (message: string) => void;
 }) {
+  const { t, tm, language } = useT();
   const available = engine.definitions.filter((d) => !d.unavailableReason());
   const [providerId, setProviderId] = useState(available[0]?.id ?? engine.definitions[0]?.id ?? '');
-  const [listName, setListName] = useState('Grocery list');
+  /** null until the person types, so the default name follows the language. */
+  const [listName, setListName] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const definition = engine.definitions.find((d) => d.id === providerId);
   const unavailable = definition?.unavailableReason() ?? null;
   const connection = state.connection;
+  const shownListName = listName ?? t('settings.defaultListName');
 
   /** Runs an action that may open Google's own UI. That UI must not sit under this modal sheet. */
   async function run(action: () => Promise<string | null>, closeFirst: boolean) {
@@ -516,7 +703,7 @@ function SettingsSheet({
       const message = await action();
       if (message) onDone(message);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      const message = tm(errorToMessage(e));
       if (closeFirst) onDone(message);
       else setError(message);
     } finally {
@@ -525,10 +712,10 @@ function SettingsSheet({
   }
 
   return (
-    <Sheet open={open} onClose={onClose} title="Settings">
+    <Sheet open={open} onClose={onClose} title={t('settings.title')}>
       <div className="stack">
         <label className="field">
-          <span>Your name</span>
+          <span>{t('settings.name')}</span>
           <input
             className="input"
             defaultValue={name}
@@ -538,15 +725,27 @@ function SettingsSheet({
           />
         </label>
 
-        <h3>Shared list</h3>
+        <LanguageChoice value={preferences.language} onChange={(value) => onPreferencesChange({ language: value })} />
+        <Segmented<ThemePreference>
+          label={t('settings.theme')}
+          value={preferences.theme}
+          options={[
+            { value: 'light', label: t('settings.themeLight') },
+            { value: 'dark', label: t('settings.themeDark') },
+            { value: 'device', label: t('settings.followDevice') },
+          ]}
+          onChange={(value) => onPreferencesChange({ theme: value })}
+        />
+
+        <h3>{t('settings.sharedList')}</h3>
         {connection ? (
           <>
             <div className="card">
-              <strong>{connection.label ?? connection.providerName}</strong>
-              <span className="hint">{statusLine(state)}</span>
+              <strong>{connection.label ? tm(connection.label) : connection.providerName}</strong>
+              <span className="hint">{statusLine()}</span>
             </div>
             <button className="button" disabled={busy} onClick={() => void engine.sync()}>
-              Sync now
+              {t('settings.syncNow')}
             </button>
             {connection.canShare && (
               <form
@@ -556,32 +755,39 @@ function SettingsSheet({
                   void run(async () => {
                     await engine.shareList(email);
                     setEmail('');
-                    return `Invite sent to ${email.trim()}`;
+                    return t('settings.inviteSent', { email: email.trim() });
                   }, false);
                 }}
               >
                 <label className="field">
-                  <span>Share with (Google account email)</span>
-                  <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@gmail.com" autoComplete="email" />
+                  <span>{t('settings.shareWith')}</span>
+                  <input
+                    className="input"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder={t('settings.emailPlaceholder')}
+                    autoComplete="email"
+                  />
                 </label>
                 <button className="button button-primary" type="submit" disabled={busy || !email.trim()}>
-                  Send invite
+                  {t('settings.sendInvite')}
                 </button>
               </form>
             )}
             <button
               className="button button-quiet"
               disabled={busy}
-              onClick={() => void run(async () => (await engine.disconnect(), 'Stopped syncing on this phone'), false)}
+              onClick={() => void run(async () => (await engine.disconnect(), t('settings.disconnected')), false)}
             >
-              Stop syncing on this phone
+              {t('settings.disconnect')}
             </button>
           </>
         ) : (
           <>
-            <p className="hint">The list is only on this phone. Connect it to shared storage so your household sees the same list.</p>
+            <p className="hint">{t('settings.localOnlyHint')}</p>
             {engine.definitions.length > 1 && (
-              <div className="choices" role="radiogroup" aria-label="Storage">
+              <div className="choices" role="radiogroup" aria-label={t('settings.storage')}>
                 {engine.definitions.map((d) => (
                   <label key={d.id} className="choice">
                     <input type="radio" name="provider" checked={providerId === d.id} onChange={() => setProviderId(d.id)} />
@@ -593,61 +799,59 @@ function SettingsSheet({
             {definition && (
               <div className="card">
                 <strong>{definition.displayName}</strong>
-                <span className="hint">{definition.description}</span>
+                <span className="hint">{t(definition.description)}</span>
               </div>
             )}
             {unavailable ? (
-              <p className="error">{unavailable}</p>
+              <p className="error">{tm(unavailable)}</p>
             ) : (
               <>
                 <label className="field">
-                  <span>New list name</span>
-                  <input className="input" value={listName} onChange={(e) => setListName(e.target.value)} />
+                  <span>{t('settings.newListName')}</span>
+                  <input className="input" value={shownListName} onChange={(e) => setListName(e.target.value)} />
                 </label>
                 <button
                   className="button button-primary"
-                  disabled={busy || !listName.trim()}
+                  disabled={busy || !shownListName.trim()}
                   onClick={() =>
                     void run(async () => {
-                      await engine.createList(providerId, listName.trim());
-                      return 'Shared list created. Open Settings to invite someone.';
+                      await engine.createList(providerId, shownListName.trim());
+                      return t('settings.created');
                     }, true)
                   }
                 >
-                  Create a new shared list
+                  {t('settings.create')}
                 </button>
                 <button
                   className="button"
                   disabled={busy}
                   onClick={() =>
-                    void run(async () => ((await engine.joinList(providerId)) ? 'Joined the shared list' : null), true)
+                    void run(async () => ((await engine.joinList(providerId)) ? t('settings.joined') : null), true)
                   }
                 >
-                  Join a list shared with me
+                  {t('settings.join')}
                 </button>
               </>
             )}
           </>
         )}
         {error && <p className="error">{error}</p>}
-        <p className="hint small">
-          Your list is kept on this phone and in the storage you connect. The app sends it nowhere else.
-        </p>
+        <p className="hint small">{t('settings.privacy')}</p>
       </div>
     </Sheet>
   );
 
-  function statusLine(s: EngineState): string {
-    if (s.message && s.status !== 'synced' && s.status !== 'syncing') return s.message;
-    if (s.status === 'syncing') return 'Syncing…';
-    return s.lastSyncedAt ? `Last synced ${timeAgo(s.lastSyncedAt)}` : 'Not synced yet';
+  function statusLine(): string {
+    if (state.problem && state.status !== 'synced' && state.status !== 'syncing') return tm(state.problem);
+    if (state.status === 'syncing') return t('sync.syncing');
+    return state.lastSyncedAt ? t('settings.lastSynced', { when: timeAgo(state.lastSyncedAt) }) : t('settings.notSynced');
 
     function timeAgo(at: number): string {
       const seconds = Math.round((Date.now() - at) / 1000);
-      if (seconds < 60) return 'just now';
+      if (seconds < 60) return t('time.justNow');
       const minutes = Math.round(seconds / 60);
-      if (minutes < 60) return `${minutes} min ago`;
-      return new Date(at).toLocaleString();
+      if (minutes < 60) return t('time.minutesAgo', { count: minutes });
+      return new Date(at).toLocaleString(language === 'af' ? 'af-ZA' : 'en-ZA');
     }
   }
 }

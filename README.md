@@ -1,6 +1,9 @@
-# Groceries
+# Spens
 
-A shared grocery list for a household. Two or more phones see one list. You add items, tick them into the trolley, and
+"Spens" is the Afrikaans word for "pantry". The app is in Afrikaans by default, with some common English words. The
+app is also available in English.
+
+Spens is a shared grocery list for a household. Two or more phones see one list. You add items, tick them into the trolley, and
 remove the bought items when you finish shopping.
 
 The app has no server of its own. The list is kept on each phone and in one storage location that you select. The first
@@ -14,10 +17,15 @@ To set it up, read [SETUP.md](SETUP.md).
 - The app does not add a duplicate. If the item is already on the list, the app shows a message and highlights the item.
 - Tap the circle to put an item in the trolley. Tap it again to put the item back on the list.
 - Tap the item name to change the name, quantity or note, or to remove the item.
-- **Done shopping** removes all bought items. **Undo** brings them back.
+- **Klaar geshop** (done shopping) removes all bought items. **Ontdoen** (undo) brings them back.
 - Each item shows who added it, if another person added it.
 - The app works offline and syncs when the phone has a connection again.
 - The app installs to the home screen as a Progressive Web App.
+- **Taal** (language): select Afrikaans, English or **Volg toestel** (follow device). The default is Afrikaans. With
+  **Volg toestel**, the app uses the phone language if it is Afrikaans or English. If not, the app uses English.
+- **Tema** (theme): select **Lig** (light), **Donker** (dark) or **Volg toestel**. The default is **Volg toestel**.
+  The app then changes when the phone changes between light and dark.
+- Each phone keeps its own language and theme. These settings do not sync.
 
 ## How sync works
 
@@ -40,21 +48,35 @@ visible, and about one second after each change.
 
 ```
 src/
-  domain/list.ts                 List document, all list operations, CRDT merge (no dependencies)
+  domain/list.ts                 List document, all list operations, CRDT merge
+  i18n/messages.ts               All app text in Afrikaans and English, and LocalizedError
   sync/StorageProvider.ts        The storage plugin contract
   sync/providers.ts              The list of providers in this build
   sync/SyncEngine.ts             Local save, pull / merge / push, sync status (no browser code)
   sync/KeyValueStore.ts          Device storage (localStorage now, native storage later)
   providers/googleDrive/         The Google Drive provider
-  app/                           React UI
+  app/                           React UI, language and theme preferences
 ```
+
+## Text and languages
+
+All text is in `src/i18n/messages.ts`. Each message has a key and one text for each language. The sync engine and the
+storage providers never make display text. They return message keys or throw `LocalizedError`. Because of this, the
+screen changes language at once, including error messages that are already on the screen.
+
+To add a language:
+
+1. Add its code to `LANGUAGES` and its name to `LANGUAGE_NAMES`.
+2. Add a catalog with the same keys. TypeScript shows an error for each missing key.
+3. Run `npm test`. A test makes sure that each text uses the same `{placeholders}` in all languages.
 
 ## Add a storage provider
 
 1. Make a class that implements `StorageProvider` from `src/sync/StorageProvider.ts`. The main methods are
    `pull()` and `push()`, which read and write the list document. The provider never merges.
-2. Export a `ProviderDefinition` with an ID, a name, a description and a `create()` function.
-3. Add the definition to `src/sync/providers.ts`.
+2. Export a `ProviderDefinition` with an ID, a name, a description key and a `create()` function.
+3. Add the provider's text to `src/i18n/messages.ts`, in all languages.
+4. Add the definition to `src/sync/providers.ts`.
 
 When there is more than one provider, Settings shows a choice. Providers that could come next: Dropbox,
 WebDAV / Nextcloud, a home server, or iCloud in a native iOS build.

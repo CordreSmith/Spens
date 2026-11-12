@@ -11,10 +11,12 @@
  * (on open, on focus, on a timer), so a native build can use its own app events.
  */
 import { docsEqual, emptyDoc, mergeDocs, parseDoc, type ListDoc } from '../domain/list';
+import { errorToMessage, LocalizedError, type Language, type Message, type MessageKey } from '../i18n/messages';
 import type { KeyValueStore } from './KeyValueStore';
 import {
   NeedsUserActionError,
   OfflineError,
+  type ProviderContext,
   type ProviderDefinition,
   type StorageProvider,
 } from './StorageProvider';
@@ -26,15 +28,15 @@ export interface EngineState {
   status: SyncStatus;
   lastSyncedAt: number | null;
   /** Explains the offline / error / needs-user-action status. */
-  message: string | null;
+  problem: Message | null;
   /** Button text for needs-user-action. */
-  actionLabel: string | null;
+  action: MessageKey | null;
   /** Local changes that the provider does not have yet. */
   pendingChanges: boolean;
   connection: {
     providerId: string;
     providerName: string;
-    label: string | null;
+    label: Message | null;
     canShare: boolean;
   } | null;
 }
@@ -52,6 +54,8 @@ export interface SyncEngineOptions {
   /** Delay between a local change and the push it triggers. */
   pushDelayMs?: number;
   now?: () => number;
+  /** The language the person picked. Providers use it for text they show themselves. */
+  language?: () => Language;
 }
 
 const DOC_KEY = 'doc';
@@ -76,7 +80,7 @@ export class SyncEngine {
     const engine = new SyncEngine(store, definitions, options, doc, meta);
     const definition = definitions.find((d) => d.id === meta.providerId);
     if (definition && !definition.unavailableReason()) {
-      const provider = definition.create(store);
+      const provider = definition.create(engine.providerContext());
       await provider.init();
       if (provider.isConnected()) engine.provider = provider;
     }
@@ -116,8 +120,8 @@ export class SyncEngine {
       doc,
       status: 'not-connected',
       lastSyncedAt: meta.lastSyncedAt,
-      message: null,
-      actionLabel: null,
+      problem: null,
+      action: null,
       pendingChanges: false,
       connection: null,
     };
@@ -174,7 +178,7 @@ export class SyncEngine {
   }
 
   async shareList(email: string): Promise<void> {
-    if (!this.provider?.capabilities.share) throw new Error('This storage cannot share lists.');
+    if (!this.provider?.capabilities.share) throw new LocalizedError('error.cannotShare');
     await this.provider.shareList(email);
   }
 
@@ -202,13 +206,17 @@ export class SyncEngine {
 
   private async prepareProvider(providerId: string): Promise<StorageProvider> {
     const definition = this.definitions.find((d) => d.id === providerId);
-    if (!definition) throw new Error(`Unknown storage: ${providerId}`);
+    if (!definition) throw new LocalizedError('error.unknownStorage', { id: providerId });
     const reason = definition.unavailableReason();
-    if (reason) throw new Error(reason);
+    if (reason) throw new LocalizedError(reason.key, reason.params);
     if (this.provider) await this.disconnect();
-    const provider = definition.create(this.store);
+    const provider = definition.create(this.providerContext());
     await provider.init();
     return provider;
+  }
+
+  private providerContext(): ProviderContext {
+    return { store: this.store, language: this.options.language ?? (() => 'af') };
   }
 
   private async attach(provider: StorageProvider): Promise<void> {
@@ -254,11 +262,11 @@ export class SyncEngine {
 
   private handleError(error: unknown): void {
     if (error instanceof NeedsUserActionError) {
-      this.setStatus('needs-user-action', error.message, error.actionLabel);
+      this.setStatus('needs-user-action', errorToMessage(error), error.action);
     } else if (error instanceof OfflineError) {
-      this.setStatus('offline', error.message);
+      this.setStatus('offline', errorToMessage(error));
     } else {
-      this.setStatus('error', error instanceof Error ? error.message : String(error));
+      this.setStatus('error', errorToMessage(error));
     }
   }
 
@@ -274,8 +282,8 @@ export class SyncEngine {
     this.writes = this.writes.then(() => this.store.set(META_KEY, json)).catch(() => undefined);
   }
 
-  private setStatus(status: SyncStatus, message: string | null = null, actionLabel: string | null = null): void {
-    this.state = { ...this.state, status, message, actionLabel };
+  private setStatus(status: SyncStatus, problem: Message | null = null, action: MessageKey | null = null): void {
+    this.state = { ...this.state, status, problem, action };
     this.refreshState();
   }
 

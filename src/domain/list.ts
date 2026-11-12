@@ -12,6 +12,7 @@
  * same name is added again). A household's distinct grocery items stay in the
  * hundreds, so the document stays small.
  */
+import { LocalizedError } from '../i18n/messages';
 
 export const SCHEMA_VERSION = 1;
 
@@ -76,9 +77,9 @@ export interface ListView {
 
 export type AddOutcome = 'added' | 'readded' | 'already-on-list';
 
-export class UnsupportedSchemaError extends Error {
+export class UnsupportedSchemaError extends LocalizedError {
   constructor(readonly schema: number) {
-    super(`This list was saved by a newer version of the app (format ${schema}). Update the app to open it.`);
+    super('error.newerSchema', { schema });
     this.name = 'UnsupportedSchemaError';
   }
 }
@@ -98,7 +99,7 @@ export function addItem(
   now: number = Date.now(),
 ): { doc: ListDoc; id: string; outcome: AddOutcome } {
   const name = input.name.trim().replace(/\s+/g, ' ');
-  if (!name) throw new Error('An item needs a name.');
+  if (!name) throw new LocalizedError('error.nameRequired');
   const key = normalizeName(name);
   const quantity = (input.quantity ?? '').trim();
 
@@ -152,7 +153,7 @@ export function updateItem(
   const clean: Partial<ItemFields> = {};
   if (patch.name !== undefined) {
     const name = patch.name.trim().replace(/\s+/g, ' ');
-    if (!name) throw new Error('An item needs a name.');
+    if (!name) throw new LocalizedError('error.nameRequired');
     clean.name = name;
   }
   if (patch.quantity !== undefined) clean.quantity = patch.quantity.trim();
@@ -252,10 +253,10 @@ export function viewList(doc: ListDoc): ListView {
  * failing the whole list, so one bad write can't lock both phones out.
  */
 export function parseDoc(raw: unknown): ListDoc {
-  if (!isRecord(raw)) throw new Error('The stored list is not a valid grocery list.');
+  if (!isRecord(raw)) throw new LocalizedError('error.invalidList');
   if (typeof raw.schema === 'number' && raw.schema > SCHEMA_VERSION) throw new UnsupportedSchemaError(raw.schema);
   if (raw.schema !== SCHEMA_VERSION || !isRecord(raw.items)) {
-    throw new Error('The stored list is not a valid grocery list.');
+    throw new LocalizedError('error.invalidList');
   }
   const items: Record<string, GroceryItem> = {};
   for (const [id, value] of Object.entries(raw.items)) {

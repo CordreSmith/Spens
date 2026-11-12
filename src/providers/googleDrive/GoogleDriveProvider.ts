@@ -8,14 +8,15 @@
  *
  * Sign-in uses Google Identity Services in the browser. Browser access tokens last
  * about an hour and can't be refreshed without a tap, so an expired token surfaces
- * as a NeedsUserActionError ("Sign in to Google") instead of a silent failure.
+ * as a NeedsUserActionError ("Meld by Google aan") instead of a silent failure.
  * A native build can replace this file's auth part with native Google sign-in.
  */
 import { parseDoc, type ListDoc } from '../../domain/list';
-import type { KeyValueStore } from '../../sync/KeyValueStore';
+import { LocalizedError, translate, type Message } from '../../i18n/messages';
 import {
   NeedsUserActionError,
   OfflineError,
+  type ProviderContext,
   type ProviderDefinition,
   type RemoteSnapshot,
   type StorageProvider,
@@ -55,17 +56,14 @@ interface FileMeta {
 export const googleDriveDefinition: ProviderDefinition = {
   id: 'google-drive',
   displayName: 'Google Drive',
-  description:
-    'The list is one file in your Google Drive. You share it with your household. The app can only see files it made or that you pick.',
+  description: 'drive.description',
   unavailableReason() {
-    return readConfig()
-      ? null
-      : 'Google Drive is not set up in this build. Add the Google keys to .env.local (see SETUP.md).';
+    return readConfig() ? null : { key: 'drive.notConfigured' };
   },
-  create(store) {
+  create(context) {
     const config = readConfig();
-    if (!config) throw new Error(this.unavailableReason() ?? 'Google Drive is not set up.');
-    return new GoogleDriveProvider(store, config);
+    if (!config) throw new LocalizedError('drive.notConfigured');
+    return new GoogleDriveProvider(context, config);
   },
 };
 
@@ -85,13 +83,13 @@ class GoogleDriveProvider implements StorageProvider {
   private list: ConnectedList | null = null;
 
   constructor(
-    private readonly store: KeyValueStore,
+    private readonly context: ProviderContext,
     private readonly config: GoogleConfig,
   ) {}
 
   async init(): Promise<void> {
-    this.token = readJson<SavedToken>(await this.store.get(TOKEN_KEY));
-    this.list = readJson<ConnectedList>(await this.store.get(LIST_KEY));
+    this.token = readJson<SavedToken>(await this.context.store.get(TOKEN_KEY));
+    this.list = readJson<ConnectedList>(await this.context.store.get(LIST_KEY));
     // Load the sign-in script early, so a later tap can open the sign-in popup at once.
     void loadGoogleIdentity().catch(() => undefined);
 
@@ -109,10 +107,12 @@ class GoogleDriveProvider implements StorageProvider {
     return this.list !== null;
   }
 
-  describeConnection(): string | null {
+  describeConnection(): Message | null {
     if (!this.list) return null;
-    if (this.list.ownedByMe) return `${this.list.fileName} · in your Google Drive`;
-    return `${this.list.fileName} · shared by ${this.list.ownerName ?? 'someone else'}`;
+    const file = this.list.fileName;
+    if (this.list.ownedByMe) return { key: 'drive.connectionMine', params: { file } };
+    if (!this.list.ownerName) return { key: 'drive.connectionSharedUnknown', params: { file } };
+    return { key: 'drive.connectionShared', params: { file, owner: this.list.ownerName } };
   }
 
   async createList(name: string, initial: ListDoc): Promise<void> {
@@ -136,7 +136,7 @@ class GoogleDriveProvider implements StorageProvider {
   async joinList(): Promise<boolean> {
     const token = await this.getToken(true);
     await loadPicker();
-    const picked = await pickFile(this.config);
+    const picked = await pickFile(this.config, translate(this.context.language(), 'drive.pickerTitle'));
     if (!picked) return false;
     const file = await this.request<FileMeta>(
       `${API}/files/${encodeURIComponent(picked.id)}?fields=id,name,version,owners(displayName,me)`,
@@ -146,8 +146,8 @@ class GoogleDriveProvider implements StorageProvider {
     if (content !== null) {
       try {
         parseDoc(content);
-      } catch (error) {
-        throw new Error(`"${file.name}" is not a grocery list. ${error instanceof Error ? error.message : ''}`.trim());
+      } catch {
+        throw new LocalizedError('drive.notAList', { file: file.name });
       }
     }
     await this.saveList(file);
@@ -156,11 +156,11 @@ class GoogleDriveProvider implements StorageProvider {
     async function loadPicker(): Promise<void> {
       await loadScript('https://apis.google.com/js/api.js');
       await new Promise<void>((resolve, reject) =>
-        gapi.load('picker', { callback: resolve, onerror: () => reject(new OfflineError()) }),
+        gapi.load('picker', { callback: resolve, onerror: () => reject(new OfflineError('drive.unreachable')) }),
       );
     }
 
-    function pickFile(config: GoogleConfig): Promise<google.picker.PickedDoc | null> {
+    function pickFile(config: GoogleConfig, title: string): Promise<google.picker.PickedDoc | null> {
       return new Promise((resolve) => {
         const shared = new google.picker.DocsView(google.picker.ViewId.DOCS)
           .setMimeTypes('application/json')
@@ -171,7 +171,7 @@ class GoogleDriveProvider implements StorageProvider {
           .setOwnedByMe(true)
           .setMode(google.picker.DocsViewMode.LIST);
         const picker = new google.picker.PickerBuilder()
-          .setTitle('Choose the shared grocery list')
+          .setTitle(title)
           .addView(shared)
           .addView(mine)
           .setAppId(config.appId)
@@ -195,11 +195,12 @@ class GoogleDriveProvider implements StorageProvider {
   async shareList(email: string): Promise<void> {
     const list = this.requireList();
     const address = email.trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new Error('Enter a valid email address.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new LocalizedError('drive.invalidEmail');
     await this.getToken(true);
-    const message =
-      `Join our shared grocery list. Open ${location.origin}${import.meta.env.BASE_URL} on your phone, ` +
-      `tap Settings, then "Join a shared list" and pick "${list.fileName}".`;
+    const message = translate(this.context.language(), 'drive.inviteEmail', {
+      url: `${location.origin}${import.meta.env.BASE_URL}`,
+      file: list.fileName,
+    });
     await this.request(
       `${API}/files/${encodeURIComponent(list.fileId)}/permissions?sendNotificationEmail=true&emailMessage=${encodeURIComponent(message)}`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'user', role: 'writer', emailAddress: address }) },
@@ -208,7 +209,7 @@ class GoogleDriveProvider implements StorageProvider {
 
   async disconnect(): Promise<void> {
     this.list = null;
-    await this.store.remove(LIST_KEY);
+    await this.context.store.remove(LIST_KEY);
   }
 
   async resolveUserAction(): Promise<void> {
@@ -234,7 +235,7 @@ class GoogleDriveProvider implements StorageProvider {
   }
 
   private requireList(): ConnectedList {
-    if (!this.list) throw new Error('No grocery list is connected.');
+    if (!this.list) throw new LocalizedError('drive.noList');
     return this.list;
   }
 
@@ -246,7 +247,7 @@ class GoogleDriveProvider implements StorageProvider {
       ownerName: owner?.displayName ?? null,
       ownedByMe: owner?.me ?? false,
     };
-    await this.store.set(LIST_KEY, JSON.stringify(this.list));
+    await this.context.store.set(LIST_KEY, JSON.stringify(this.list));
   }
 
   /** Returns the parsed file content, or null when the file is empty. */
@@ -256,16 +257,14 @@ class GoogleDriveProvider implements StorageProvider {
     try {
       return JSON.parse(text);
     } catch {
-      throw new Error('The shared list file is damaged (it is not valid JSON).');
+      throw new LocalizedError('drive.damaged');
     }
   }
 
   /** Returns a valid access token. Without `interactive`, an expired token asks the person to sign in again. */
   private async getToken(interactive: boolean): Promise<string> {
     if (this.token && this.token.expiresAt - 60_000 > Date.now()) return this.token.accessToken;
-    if (!interactive) {
-      throw new NeedsUserActionError('Your Google sign-in on this phone has expired.', 'Sign in to Google');
-    }
+    if (!interactive) throw new NeedsUserActionError('drive.expired', 'drive.signIn');
     await loadGoogleIdentity();
     const response = await new Promise<google.accounts.oauth2.TokenResponse>((resolve, reject) => {
       const client = google.accounts.oauth2.initTokenClient({
@@ -273,22 +272,16 @@ class GoogleDriveProvider implements StorageProvider {
         scope: SCOPE,
         callback: resolve,
         error_callback: (error) =>
-          reject(
-            new Error(
-              error.type === 'popup_failed_to_open'
-                ? 'The Google sign-in window was blocked. Allow pop-ups for this app and try again.'
-                : 'Google sign-in was cancelled.',
-            ),
-          ),
+          reject(new LocalizedError(error.type === 'popup_failed_to_open' ? 'drive.popupBlocked' : 'drive.cancelled')),
       });
       client.requestAccessToken({ prompt: '' });
     });
-    if (response.error) throw new Error(response.error_description ?? `Google sign-in failed (${response.error}).`);
-    if (!google.accounts.oauth2.hasGrantedAllScopes(response, SCOPE)) {
-      throw new Error('The app needs permission to use its own files in your Google Drive. Sign in again and allow it.');
+    if (response.error) {
+      throw new LocalizedError('drive.signInFailed', { detail: response.error_description ?? response.error });
     }
+    if (!google.accounts.oauth2.hasGrantedAllScopes(response, SCOPE)) throw new LocalizedError('drive.scopeMissing');
     this.token = { accessToken: response.access_token, expiresAt: Date.now() + response.expires_in * 1000 };
-    await this.store.set(TOKEN_KEY, JSON.stringify(this.token));
+    await this.context.store.set(TOKEN_KEY, JSON.stringify(this.token));
     return this.token.accessToken;
   }
 
@@ -308,20 +301,16 @@ class GoogleDriveProvider implements StorageProvider {
 
     if (response.status === 401) {
       this.token = null;
-      await this.store.remove(TOKEN_KEY);
-      throw new NeedsUserActionError('Your Google sign-in on this phone has expired.', 'Sign in to Google');
+      await this.context.store.remove(TOKEN_KEY);
+      throw new NeedsUserActionError('drive.expired', 'drive.signIn');
     }
-    if (response.status === 404) {
-      throw new Error('The shared list is gone or no longer shared with you. Ask for it to be shared again, or create a new list.');
-    }
+    if (response.status === 404) throw new LocalizedError('drive.gone');
     if (response.status === 403 || response.status === 429 || response.status >= 500) {
       const detail = await response.text().catch(() => '');
-      if (response.status === 403 && !/rateLimit|userRateLimit/i.test(detail)) {
-        throw new Error('Google Drive refused access to the shared list. Check that it is shared with you as an editor.');
-      }
-      throw new OfflineError('Google Drive is busy. Changes are saved on this phone and sync shortly.');
+      if (response.status === 403 && !/rateLimit|userRateLimit/i.test(detail)) throw new LocalizedError('drive.refused');
+      throw new OfflineError('drive.busy');
     }
-    throw new Error(`Google Drive error ${response.status}.`);
+    throw new LocalizedError('drive.httpError', { status: response.status });
   }
 }
 
@@ -342,7 +331,7 @@ function loadScript(src: string): Promise<void> {
       element.onerror = () => {
         scripts.delete(src);
         element.remove();
-        reject(new OfflineError('Could not reach Google. Check your connection and try again.'));
+        reject(new OfflineError('drive.unreachable'));
       };
       document.head.appendChild(element);
     });
